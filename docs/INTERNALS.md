@@ -5,8 +5,17 @@
 
 面向想改这个插件、或想在 DSH 里做同类拦截的维护者。只想用它的话看 [README](../README.md) 就够了。
 
-所有 `文件:行` 引用均以运行中的 `@deepseek-ai/dsh@0.1.6-alpha.1`（路径前缀
-`/root/deepseek-harness-016/node_modules/@deepseek-ai/`）的**编译产物**为准。
+所有 `文件:行` 引用均以运行中的 `@deepseek-ai/dsh@0.1.7-alpha.2`（路径前缀
+`…\npm\node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai\`）的**编译产物**为准，
+并已回对 `0.1.7-rc.1` 抽样复核。
+
+> **兼容性结论（0.1.7 复核）**：原始基线是 `0.1.6-alpha.1`。上游**未**原生支持
+> 「忙时排队斜杠命令」——`dsh-command-compact/README.md:141,153` 明写
+> *"the command itself is not queued"* 并把 *"Queued commands"* 列为
+> *undecided / open direction*；`dsh-commands` 业务代码零排队逻辑；UI 层
+> `plainMessageDraft` 显式把 `/` 草稿排除在 queue/steer 之外。本插件依赖的内部 API
+> 逐条仍在（`dsh-commands/lib/index.js` 与 0.1.6-alpha.1 **字节完全相同**），
+> 唯一需要跟进的是客户端 QueueDock 样式（已同步，见 §3）。
 
 ---
 
@@ -30,11 +39,22 @@
                                       original.execute(...)  ← 原方法：原注册表解析、原生命周期日志
 ```
 
-**为什么包装实例方法有效**：typert gateway 在 `prepareInvocation()` 里
-每次调用都执行 `Reflect.get(receiver, descriptor.implementation ?? descriptor.method)`；
-而 `commands/execute` 的 strict descriptor 只声明 `method: 'execute'`（不含方法引用）。
-所以在服务实例上给 `execute` 赋一个新函数会被后续所有请求采纳，
+**为什么打这个补丁有效**：typert gateway 在 `prepareInvocation()` 里每次调用都执行
+`Reflect.get(receiver, descriptor.implementation ?? descriptor.method)`
+（`dsh-api-gateway/lib/index.js:977-978`）；而 `commands/execute` 的 strict descriptor
+只声明 `method: 'execute'`，**不携带方法引用**（`dsh-commands/lib/typert.host.js:54`）。
+所以给服务对象加一个自有的 `execute` 会被后续所有请求采纳，
 `agentId` 参数解析、参数校验、结果 schema 全部不变。
+
+> **两个必须知道的细节**（都踩过）：
+> 1. `execute` 定义在 **`CommandRuntime.prototype`** 上，实例本身没有自有描述符
+>    （`Object.getOwnPropertyDescriptor(raw, 'execute') === undefined`）。插件用
+>    `Object.defineProperty(target, 'execute', …)` 建一个**遮蔽**原型方法的自有属性；
+>    还原时 `previous === undefined`，因此实际走 `delete target.execute` 把原型方法
+>    重新露出来。若改成 `defineProperty(target, 'execute', previous)` 会直接抛错。
+> 2. **不能**用 `service.execute === patched` 判断补丁是否生效 —— `ctx.commands` 是
+>    cordis 的 traceable Proxy，每次读函数属性都返回新的 shadow 方法，恒为 `false`。
+>    要拿原始实例走 `ctx.commands[Symbol.for('cordis.original')]`（只在代理上有效）。
 
 命令仍由**原注册表**解析（`ctx.commands.find()` / 层遮蔽规则都不动），
 `command/run` + `command/done` 生命周期日志仍由 `CommandRuntime` 自己写，
@@ -70,8 +90,8 @@
 ## 3. 浏览器队列面板
 
 **它挂在哪**：DSH 原生消息队列本身就是槽位 `conversation.input.dock` 上的一个
-**list 贡献**（`dsh-client-ui-conversation/lib/client.js:14543` 的 `queueDockEntry`，
-`id: "queue"`、`order: 20`）。list 槽允许第三方携带自己的 `id` **追加**条目，
+**list 贡献**（`dsh-client-ui-conversation/lib/client.js:15535-15537`，`id: "queue"`；
+槽位声明见同文件 `:17789`）。list 槽允许第三方携带自己的 `id` **追加**条目，
 所以本插件注册 `id: "command-queue"`、`order: 30`，两条队列上下并排：
 
 ```js
@@ -83,11 +103,21 @@ ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
 }, CommandQueueDock))
 ```
 
-**样式来源**：CSS 直接取自原生 QueueDock 的 CSS 模块原文
-（`dsh-client-ui-conversation/lib/client.js:14142` 的 `css$6`），类名统一改前缀为
+兼容边界：0.1.7 给 list 槽新增了两个**可选**字段 `label` / `priority`
+（槽位内核 `dsh-client-ui-slots/lib/index.js` 与 0.1.6-alpha.2 **字节相同**），
+本插件不传即取默认值，向后兼容。
+
+**样式来源**：CSS 取自原生 QueueDock 的 CSS 模块原文
+（`dsh-client-ui-conversation/lib/client.js:15078` 的 `css$6`），类名统一改前缀为
 `dshcq_` 避免冲突，设计变量（`--dsw-alias-*`、`--dsh-composer-*`）沿用全局主题，
 因此深浅色主题下与原生队列表现一致。样式通过官方那套
 `<style data-plugin-css=…>` 注入模式幂等插入。
+
+> 0.1.7 重做过这块面板，本插件 CSS 已于 v0.2.1 同步：面板改为 `isolation:isolate`
+> + `:before` 半透明菜单层（原写法是 `background:var(--dsw-specific-tip)`，深色主题下
+> 底色偏差可见）、行高 `min-height`、字号走 `--dsw-font-xs-13` token、
+> 图标按钮补 `corner-shape:round`。原生面板另支持附件缩略图与就地编辑，本插件
+> **有意不跟进**（保持「单行摘要 + 移除按钮」），避免下次审计重复排查这一点。
 
 **数据从哪来**：`ctx.connection.fetch.register()` 注册两条**已鉴权**路由：
 
@@ -109,7 +139,7 @@ Web 应用无法 mount。
 
 ## 4. 你会看到什么（实测的运行时行为）
 
-这些结论来自对运行中 `@deepseek-ai/dsh@0.1.6-alpha.1` 客户端/host 代码的逐行核对。
+这些结论来自对运行中 `@deepseek-ai/dsh@0.1.7-alpha.2` 客户端/host 代码的逐行核对。
 
 **提交 `/compact`（agent 正在跑）时：**
 
@@ -181,18 +211,30 @@ POST /api/commands/execute  {"agentId":"session-…","line":"/cmdqueue",…}
 T1 与 T2 的对比同时证明了：补丁确实落在 gateway 的调用路径上（否则 `/cmdqueue`
 会立刻返回），且排队判定确实基于 agent 忙闲。
 
+> 上面这组 T1/T2 记录采集自 `0.1.6-alpha.1` 基线。0.1.7-alpha.2 上重跑的是更强的一版
+> **活体探针**（`probe-cq-017.mjs`）：真 `cordis.Context` 上 `new CommandRuntime(root)`，
+> 真打补丁，再经**另一个 scope 的代理**调用 —— 精确模拟 gateway 的
+> `receiverContext.extend({invocation}).get('commands')` 取值路径。关键读数：
+> `patched actually invoked :: true`、`proxy[Symbol.for('cordis.original')] === raw :: true`、
+> `typeof raw.execute / arity :: function / 4`、
+> `getOwnPropertyDescriptor(raw,'execute') :: undefined`（故还原走 `delete` 分支）。
+
 ---
 
 ## 6. 代码出处
 
-实现依据（运行中的 `@deepseek-ai/dsh@0.1.6-alpha.1`，路径为
-`/root/deepseek-harness-016/node_modules/@deepseek-ai/`）：
+实现依据（运行中的 `@deepseek-ai/dsh@0.1.7-alpha.2`，路径为
+`…\npm\node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai\`）：
 
-- `dsh-commands/lib/index.js:327` —— `async execute(agent, line, submittedAttachments, signal)`（原型方法，可包装）
-- `dsh-commands/lib/types/index.d.ts:80-158` —— `register()` / `list()` / `find()` / `execute()` 公开契约
-- `dsh-commands/lib/typert.host.js:45-48` —— strict descriptor 只声明 `method: 'execute'`
-- `dsh-api-gateway/lib/index.js:747-749` —— `Reflect.get(receiver, implementation)` 每次调用动态取方法
-- `dsh-api-gateway/lib/index.js:828` —— `implementation` 是方法**名**而非方法引用
-- `dsh-command-compact/lib/index.js:49-73` —— `/compact` handler 与 busy 文案
-- `dsh-compaction/lib/types/index.d.ts:131` —— `compactNow(agent, signal, sourceCommandId)`
-- `dsh-agent/lib/types/runtime-types.d.ts:90,147,149,252` —— `AgentStatus` / `agent.status` / `agent.ctx` / `agent/status` 事件
+- `dsh-commands/lib/index.js:327` —— `async execute(agent, line, submittedAttachments, signal)`（原型方法，可包装）；该文件与 `0.1.6-alpha.1` **字节完全相同**
+- `dsh-commands/lib/types/index.d.ts:142` —— `execute(agent, line, submittedAttachments, signal)` 公开契约
+- `dsh-commands/lib/typert.host.js:54` —— strict descriptor 只声明 `method: 'execute'`（同处 `cancellation: { parameter: 'signal' }`）
+- `dsh-api-gateway/lib/index.js:977-978` —— `implementation = descriptor.implementation ?? descriptor.method` / `Reflect.get(callReceiver, implementation)`：每次调用动态取方法
+- `dsh-command-compact/lib/index.js:49-73` —— `/compact` handler 与 busy 文案（`:18-23` 是 `code === 'busy'` 的用户可见文案）
+- `dsh-compaction-basic/lib/index.js:984-1010` —— `compactNow` 把 `runMaintenance` 的同步抛错包成 `ManualCompactionError('busy', …)`
+- `dsh-compaction/lib/types/index.d.ts:137` —— `compactNow(agent, signal, sourceCommandId)`
+- `dsh-agent-loop/lib/index.js:822-823` —— `runMaintenance` 的忙时闸门：`if (this.phase.kind !== "idle") throw`
+- `dsh-agent-loop/lib/index.js:870` —— `async whenIdle()`
+- `dsh-agent/lib/types/runtime-types.d.ts:90,147,149,254` —— `AgentStatus` / `agent.status` / `agent.ctx` / `agent/status` 事件
+- `dsh-client-ui-conversation/lib/client.js:15078` —— 原生 QueueDock 的 `css$6`（本插件 CSS 出处）
+- `dsh-client-ui-conversation/lib/client.js:15535-15537`、`:17789` —— 原生队列 dock 贡献（`id: "queue"`）与 `conversation.input.dock` 槽位声明

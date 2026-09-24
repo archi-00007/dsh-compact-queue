@@ -1,6 +1,45 @@
 # Changelog
 
-## Unreleased
+## v0.2.1 — 2026-09-24
+
+**针对 `@deepseek-ai/dsh@0.1.7-alpha.2` 的兼容性核查 + 客户端样式同步。**
+
+### 兼容性核查结论
+
+上游**没有**原生支持「忙时排队斜杠命令」：`dsh-command-compact/README.md:141` 明写
+*"the command itself is not queued"*，`:153` 把 *"Queued commands"* 记为
+*undecided / open direction*；`dsh-commands` 业务代码对
+`queue|busy|whenIdle|status` 零命中；UI 层 `plainMessageDraft` 显式把 `/` 开头的草稿
+排除在 queue/steer 语义之外。本插件补的这段能力，0.1.7 线（含 `0.1.7-rc.1`）仍然缺席。
+
+> 易误读的一点：0.1.7 确实原生支持忙时排队 —— 但排的是**普通消息**
+> （`BUSY_ENTER_BEHAVIORS = ["queue","steer"]` + inbox `next-turn` + QueueDock），
+> 不是斜杠命令。
+
+依赖的内部 API **逐条仍在**（21 项 host + 10 项 client）：`ctx.commands` 仍是 cordis
+traceable Proxy、`Symbol.for('cordis.original')` 仍可穿透、`dsh-api-gateway` 仍每次调用
+动态 `Reflect.get(callReceiver, 'execute')`、`conversation.input.dock` 槽位与
+`__ModuleLoader__` 协议未变。其中 `dsh-commands/lib/index.js` 与 0.1.6-alpha.1
+**字节完全相同**。
+
+### 修复
+
+- **客户端 QueueDock 样式同步到 0.1.7**。CSS 复刻源从
+  `dsh-client-ui-conversation/lib/client.js:14142` 更新为 `:15078`。0.1.7 重做了这块面板，
+  按旧写法渲染与原生队列并排时观感不一致：
+  - `.dshcq_panel` 去掉 `background:var(--dsw-specific-tip)`，改 `isolation:isolate`，
+    并新增 `:before` 半透明菜单层（`--dsw-specific-menu` + `--dsw-menu-backdrop-filter`）
+    —— 这是最明显的一处，旧写法在深色主题下底色偏差可见；
+  - `.dshcq_header` 新增 `:disabled{cursor:default}`；
+  - `.dshcq_row` 的 `height:36px` → `min-height:36px`（长内容可换行）；
+  - `.dshcq_preview` / `.dshcq_status` 的 `13px` / `12px` → `font:var(--dsw-font-xs-13)`，
+    改为跟随用户的内容字号设置；
+  - `.dshcq_action` 新增 `corner-shape:round`。
+- **`npm run build` 不再依赖 bash**。原脚本是 `bash scripts/build.sh`，需要环境里有可用的
+  bash；新版 DSH 的运行环境里 `bash` 垫片失效时会直接抛
+  `CreateInstance/0x800705aa` 而构建失败。现改为等价的 node 直调
+  （`node --check` ×2 + `node --test` 指定两个测试文件），跨平台开箱可用；
+  `scripts/build.sh` 保留给 Unix 用户。
 
 ### 文档
 
@@ -11,6 +50,23 @@
   `文件:行` 代码出处）原样移至 **[docs/INTERNALS.md](./docs/INTERNALS.md)**，一条证据未丢。
 - 新增故障排查项：客户端面板不出现 / v0.1.0→v0.2.0 的 `pkgMeta` 负缓存坑 /
   排队期间 transcript 无提示 / 命令迟迟不执行 / 白名单被整体替换的副作用 / 多 agent 隔离。
+- 兼容性声明与 `docs/INTERNALS.md` 的基线从 `0.1.6-alpha.1` 更新为
+  「已验证兼容至 `0.1.7-alpha.2`」，`文件:行` 出处全部按 0.1.7 重新定位
+  （`dsh-commands/lib/index.js:327` 未变；`typert.host.js` → `:54`；
+  `dsh-api-gateway` → `:977-978`；`dsh-compaction` types → `:137`；
+  `dsh-agent` types → `:90,147,149,254`；QueueDock CSS → `:15078`）。
+- `docs/INTERNALS.md` 修正补丁机制的措辞：`execute` 位于 `CommandRuntime.prototype`，
+  实例上没有自有描述符，因此还原实际走 `delete target.execute` 分支把原型方法露回来。
+
+### 验证
+
+- `npm test` → **29/29 通过**（含 traceable Proxy 的 patch 与精确还原两个回归用例）。
+- 活体探针（真 `cordis.Context` 上 `new CommandRuntime(root)`，真打补丁，再经另一个
+  scope 的代理调用 —— 精确模拟 typert gateway 的取值路径）：
+  `patched actually invoked :: true`，即补丁确实被网关采纳。
+  关键读数：`proxy[Symbol.for('cordis.original')] === raw :: true`、
+  `typeof raw.execute / arity :: function / 4`、
+  `getOwnPropertyDescriptor(raw,'execute') :: undefined`（故走 `delete` 还原）。
 
 ---
 

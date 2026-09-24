@@ -1,6 +1,6 @@
 {
   "name": "dsh-command-queue",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DSH 插件：让 /compact 等斜杠命令在 agent 忙碌时进入命令队列，空闲后自动执行；并在浏览器里以复刻原生队列的样式展示这份队列。",
   "keywords": [
     "dsh",
@@ -55,7 +55,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "bash scripts/build.sh",
+    "build": "node --check lib/index.js && node --check lib/client.js && node --test tests/queue.test.mjs tests/client-bundle.test.mjs",
     "test": "node --test tests/*.test.mjs",
     "check": "node --check lib/index.js && node --check lib/client.js"
   },

@@ -8,7 +8,7 @@
 [![Release](https://img.shields.io/github/v/release/kuyueliuhun-ctrl/dsh-command-queue?sort=semver)](https://github.com/kuyueliuhun-ctrl/dsh-command-queue/releases)
 [![License](https://img.shields.io/github/license/kuyueliuhun-ctrl/dsh-command-queue)](./LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-blueviolet)](https://github.com/topics/dsh-plugin)
-[![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.1.6--alpha.1-4f46e5)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.1.7--alpha.2-4f46e5)](https://github.com/deepseek-ai/deepseek-harness)
 
 DeepSeek Harness（DSH）插件 · host + client 双面 · **不改 DSH 源码** · 卸载即完全还原
 
@@ -209,9 +209,15 @@ npm run build # 语法校验 + 全套测试
 
 ## 兼容性
 
-针对运行中的 `@deepseek-ai/dsh@0.1.6-alpha.1` 实现，依据其编译产物逐行核对。
+针对运行中的 `@deepseek-ai/dsh@0.1.7-alpha.2` 实现，依据其编译产物逐行核对
+（`0.1.6-alpha.1` 为原始基线，`0.1.7-rc.1` 抽样复核结论一致）。
 只使用公开面：`ctx.commands.execute/find/register`、`agent.status`、
 `agent.ctx.on('agent/status')`、`ctx.connection.fetch.register`、`ctx.slots.*`。
+
+> **上游仍未支持「忙时排队命令」**：`dsh-command-compact` 的官方文档明写
+> *"the command itself is not queued"*，并把 *"Queued commands"* 列为
+> *undecided / open direction*。若某天落地，本插件应默认停用 host 侧包装，
+> 以免同一命令被排队两次。
 
 ## 许可
 
