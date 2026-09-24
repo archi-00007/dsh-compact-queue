@@ -1,5 +1,57 @@
 # Changelog
 
+## v0.2.2 — 2026-09-24
+
+**修复回归：不再把「改会话状态」的命令排进队列。**
+
+### 问题
+
+v0.2.0–v0.2.1 的排队规则是「除立即白名单外一律排队」。实测在运行中的
+`@deepseek-ai/dsh@0.1.7-alpha.2` 上共注册 11 条命令，旧规则排掉了其中 10 条：
+
+```
+cmdqueue, compact, export, feedback, goal, ha, ha-orch-resume,
+orchestrate, permission, plan, room
+```
+
+其中 `/permission`（切权限预设）、`/plan`、`/goal` 是**改会话状态**的命令，
+被推迟到回合结束后就完全失去意义 —— 用户想在 agent 忙着的时候放宽权限以批准操作，
+却改不动。
+
+### 修复
+
+- **默认规则反转为白名单**：只有名字列在 `deferCommands` 里的命令才可能被排队，
+  默认 `['compact']` —— 它是唯一「忙时必然失败」的命令（`compactNow` →
+  `runMaintenance` 的 `phase.kind !== 'idle'` 同步闸门）。只有明确需要 agent
+  空闲的命令才排队，其余一律立即执行。
+- 完整判定顺序（任一命中即立即执行）：不是合法命令语法 → 命令名不在
+  `deferCommands` 里 → 命令名在强制立即名单里 → 命令名在注册表里解析不到 →
+  agent 当前就是 idle。只有「合法 + 在 `deferCommands` 里 + 未被强制立即 +
+  已注册 + agent 正忙」才入队。
+- `immediateCommands` / `alwaysImmediateCommands` 仍是**强制立即**名单，与内置的
+  `stop / cancel / abort / interrupt / halt` 取并集；某命令即使同时列在
+  `deferCommands` 里也立即执行。
+
+### ⚠️ 破坏性配置变更
+
+- **`immediateCommands` 从「整体替换内置名单」改为「与内置名单取并集」。**
+  v0.2.1 及以前写 `immediateCommands: ['foo']` 会**丢掉** `stop / cancel / abort /
+  interrupt / halt` 的立即语义；v0.2.2 起内置控制动词永远强制立即，该键只做「加」。
+  若你曾为了保住控制动词而在 `immediateCommands` 里重复列出它们，现在可以删掉。
+
+### 新增配置
+
+- `deferCommands`（命令名数组，接受带或不带前导 `/`）—— 排队的白名单，默认
+  `['compact']`；显式空数组 `[]` = 没有任何命令排队，等同于关闭排队功能。
+
+### 验证
+
+- `npm test` **全套通过**。
+- 在运行中的 `@deepseek-ai/dsh@0.1.7-alpha.2` 上实测：`/permission` 在 agent
+  忙碌时**立即执行**；`/compact` 忙碌时仍被挂起排队，并可从队列面板移除。
+
+---
+
 ## v0.2.1 — 2026-09-24
 
 **针对 `@deepseek-ai/dsh@0.1.7-alpha.2` 的兼容性核查 + 客户端样式同步。**

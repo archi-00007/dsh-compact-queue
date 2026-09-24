@@ -154,7 +154,7 @@ test('agent 忙碌：命令被挂起，空闲后自动执行一次', async () =>
 
 test('多个命令按 FIFO 串行，不并发抢占同一个空闲窗口', async () => {
   const harness = createHarness()
-  apply(harness.ctx, {})
+  apply(harness.ctx, { deferCommands: ['compact', 'export'] })
   const agent = createAgent('s1', 'running')
 
   const first = harness.commands.execute(agent, '/compact', [], new AbortController().signal)
@@ -188,9 +188,9 @@ test('排队期间请求被取消：返回 error 且不执行命令', async () =
   assert.equal(harness.calls.length, 0)
 })
 
-test('未注册的命令名：照旧立即执行（回落原行为，不误排队）', async () => {
+test('未注册的命令名：即便列进 deferCommands 也照旧立即执行（不误排队）', async () => {
   const harness = createHarness()
-  apply(harness.ctx, {})
+  apply(harness.ctx, { deferCommands: ['nope'] })
   const agent = createAgent('s1', 'running')
 
   await harness.commands.execute(agent, '/nope', [], new AbortController().signal)
@@ -211,9 +211,9 @@ test('非命令行：照旧立即执行', async () => {
   assert.equal(harness.calls.length, 3, '三条都不应被排队')
 })
 
-test('立即执行白名单：/stop 在忙碌时也不排队', async () => {
+test('内置强制立即名单：/stop 即便列进 deferCommands 也不排队', async () => {
   const harness = createHarness()
-  apply(harness.ctx, {})
+  apply(harness.ctx, { deferCommands: ['stop'] })
   const agent = createAgent('s1', 'running')
 
   await harness.commands.execute(agent, '/stop', [], new AbortController().signal)
@@ -221,9 +221,75 @@ test('立即执行白名单：/stop 在忙碌时也不排队', async () => {
   assert.equal(harness.calls.length, 1)
 })
 
-test('白名单可配置：immediateCommands 整体替换 + alwaysImmediateCommands 追加', async () => {
+test('默认只排 compact：其余命令（含改权限类）忙碌时一律立即执行', async () => {
+  const harness = createHarness({ findNames: ['compact', 'permission', 'plan', 'goal', 'export'] })
+  apply(harness.ctx, {})
+  const agent = createAgent('s1', 'running')
+  const signal = new AbortController().signal
+
+  // 回归用例：v0.2.0–v0.2.1 会把这些也排进队列，于是 /permission 在 agent 忙着时
+  // 改不动权限、/plan 进不了计划模式 —— 用户报告的就是这一类。
+  await harness.commands.execute(agent, '/permission', [], signal)
+  await harness.commands.execute(agent, '/plan', [], signal)
+  await harness.commands.execute(agent, '/goal', [], signal)
+  await harness.commands.execute(agent, '/export', [], signal)
+
+  assert.equal(harness.calls.length, 4, '不在 deferCommands 里的命令必须立刻执行')
+  assert.deepEqual(
+    harness.calls.map((call) => call.line),
+    ['/permission', '/plan', '/goal', '/export'],
+  )
+
+  // 只有 /compact 走队列
+  const pending = harness.commands.execute(agent, '/compact', [], signal)
+  await flush()
+  assert.equal(harness.calls.length, 4, '/compact 应被挂起')
+  agent.goIdle()
+  await pending
+  assert.equal(harness.calls.length, 5, '空闲后 /compact 才执行')
+})
+
+test('deferCommands 可延展：只有列进去的命令才排队', async () => {
+  const harness = createHarness({ findNames: ['compact', 'export', 'permission'] })
+  apply(harness.ctx, { deferCommands: ['export'] })
+  const agent = createAgent('s1', 'running')
+  const signal = new AbortController().signal
+
+  await harness.commands.execute(agent, '/compact', [], signal)
+  await harness.commands.execute(agent, '/permission', [], signal)
+  const exportCall = harness.commands.execute(agent, '/export', [], signal)
+  await flush()
+
+  assert.deepEqual(
+    harness.calls.map((call) => call.line),
+    ['/compact', '/permission'],
+    '只有 export 被排队',
+  )
+
+  agent.goIdle()
+  await exportCall
+  assert.equal(harness.calls.length, 3)
+})
+
+test('deferCommands: [] 等于关闭排队：所有命令都立即执行', async () => {
+  const harness = createHarness({ findNames: ['compact', 'export'] })
+  apply(harness.ctx, { deferCommands: [] })
+  const agent = createAgent('s1', 'running')
+  const signal = new AbortController().signal
+
+  await harness.commands.execute(agent, '/compact', [], signal)
+  await harness.commands.execute(agent, '/export', [], signal)
+
+  assert.equal(harness.calls.length, 2)
+})
+
+test('immediateCommands / alwaysImmediateCommands 与内置名单取并集，可强制立即', async () => {
   const harness = createHarness({ findNames: ['compact', 'export', 'stop'] })
-  apply(harness.ctx, { immediateCommands: ['export'], alwaysImmediateCommands: ['stop'] })
+  apply(harness.ctx, {
+    deferCommands: ['compact', 'export', 'stop'],
+    immediateCommands: ['export'],
+    alwaysImmediateCommands: ['stop'],
+  })
   const agent = createAgent('s1', 'running')
   const signal = new AbortController().signal
 
@@ -259,7 +325,7 @@ test('轮询兜底：agent/status 事件不可用时仍能在空闲后执行', a
 
 test('多 agent 相互隔离：一个 agent 空闲不会放行另一个的在队命令', async () => {
   const harness = createHarness()
-  apply(harness.ctx, {})
+  apply(harness.ctx, { deferCommands: ['compact', 'export'] })
   const firstAgent = createAgent('a', 'running')
   const secondAgent = createAgent('b', 'running')
   const signal = new AbortController().signal

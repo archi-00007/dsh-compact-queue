@@ -49,9 +49,9 @@ agent 忙碌时敲 `/compact`：
 
 | | |
 |---|---|
-| 🧩 **通用** | 任何斜杠命令都适用，不限于 `/compact` —— 不枚举命令名，拦截点在 `ctx.commands.execute()` |
+| 🧩 **通用** | 拦截点在 `ctx.commands.execute()`，任何斜杠命令都能按需纳入排队（列进 `deferCommands`），默认只排 `/compact` |
 | 👀 **看得见** | 浏览器队列面板，CSS 与 DOM **取自原生 QueueDock 原文**（仅换类名前缀），沿用全局主题变量 |
-| 🔒 **零回归** | 非命令语法 / 注册表解析不到 / 控制动词（`/stop` 等）/ agent 已空闲 —— 一律照旧立即执行 |
+| 🔒 **零回归** | 默认只排 `/compact`；非命令语法 / 未列入 `deferCommands` / 强制立即（`/stop` 等）/ 注册表解析不到 / agent 已空闲 —— 一律照旧立即执行 |
 | 🧯 **不吞命令** | 排队逻辑自身抛错时回落原行为；卸载时唤醒等待者让在队命令立刻执行完 |
 | 🎛 **可控** | 按 agent 隔离、严格 FIFO 串行、可随 UI 请求取消、可从面板移除 |
 | 🔐 **鉴权** | 面板数据走 `/api` 已鉴权路由（Host/Origin 围栏 + 签名 cookie），不用裸 webServer 路由 |
@@ -124,22 +124,33 @@ dev_uninject_plugin { "match": "dsh-command-queue" }
 
 ```
 /cmdqueue
-→ 2 command(s) queued for this agent, waiting for it to become idle: /compact, /export
+→ 1 command(s) queued for this agent, waiting for it to become idle: /compact
 → No queued commands for this agent.
 ```
 
-### 行为契约：什么时候**不**排队
+### 行为契约：什么时候排队
 
-以下情况一律保持原行为（立即执行），保证零回归：
+**规则是白名单**：只有名字明确列在 `deferCommands` 里的命令才可能被排队，默认只有
+`/compact` —— 它是唯一「忙时必然失败」的命令（`compactNow` → `runMaintenance` 的
+`phase.kind !== 'idle'` 同步闸门）。其余命令一律照旧立即执行，这就是零回归的来源。
 
-- **不是合法命令语法** —— 第 0 字节不是 `/`、名称含大写或非法字符（如 `/Compact`）、只有 `/`；
-- **命令名在注册表里解析不到** —— 客户端本来就会按「未命中」处理，没必要拖到空闲之后；
-- **命令名在立即执行白名单里** —— 默认 `stop` / `cancel` / `abort` / `interrupt` / `halt`，
-  忙碌时敲 `/stop` 本该立刻中断，排队会失去意义甚至危险；
-- **agent 当前就是 idle**；
-- **排队逻辑自身抛错** —— 兜底回落成原行为，绝不吞掉用户命令。
+以下情况**任一命中即立即执行**，不进队列：
 
-只有「合法 + 已注册 + 未豁免 + agent 正忙」才入队。
+1. **不是合法命令语法** —— 第 0 字节不是 `/`、名称含大写或非法字符（如 `/Compact`）、只有 `/`；
+2. **命令名不在 `deferCommands` 里** —— 默认即绝大多数命令走这里；
+3. **命令名在强制立即名单里** —— 内置 `stop` / `cancel` / `abort` / `interrupt` / `halt`
+   永远立即（忙碌时敲 `/stop` 本该立刻中断，排队会失去意义甚至危险），
+   用户配置的 `immediateCommands` / `alwaysImmediateCommands` 与之**取并集**；
+4. **命令名在注册表里解析不到** —— `ctx.commands.find(agent, name)` 返回 `undefined`，
+   客户端本来就会按「未命中」处理，没必要拖到空闲之后；
+5. **agent 当前就是 idle**。
+
+只有「合法 + 在 `deferCommands` 里 + 未被强制立即 + 已注册 + agent 正忙」才入队。
+此外，**排队逻辑自身抛错**时兜底回落成原行为，绝不吞掉用户命令。
+
+> 为什么默认只排 `/compact`：`/permission`（切权限预设）、`/plan`、`/goal` 是**改会话状态**的命令，
+> 被推迟到回合结束等于彻底失效 —— 想在 agent 忙着时放宽权限去批准操作，却改不动。
+> v0.2.0–0.2.1 的「除立即白名单外一律排队」正是这个回归的来源。
 
 ## 配置
 
@@ -149,21 +160,28 @@ dev_uninject_plugin { "match": "dsh-command-queue" }
 - id: command-queue
   name: 'dsh-command-queue'
   config:
+    deferCommands:                   # 主开关：只有列在这里的命令才排队（默认 ['compact']）
+      - compact                      # 带不带前导 / 都可以
     verbose: true                    # 打开排队/执行日志（默认 false）
     pollIntervalMs: 250              # host 侧等空闲的轮询兜底间隔，50–5000（默认 250）
     exposeState: true                # 注册给浏览器面板的已鉴权路由（默认 true；false = 纯 host）
-    immediateCommands:               # 整体替换默认白名单
-      - stop
-      - cancel
-      - abort
-    alwaysImmediateCommands:         # 在（默认或自定义的）白名单上追加
+    immediateCommands:               # 强制立即：与内置名单取并集（v0.2.2 起不再整体替换）
+      - export
+    alwaysImmediateCommands:         # 同样是并集，语义上与 immediateCommands 等价
       - my-control-command
 ```
 
+- `deferCommands` 是排队的白名单，默认 `['compact']`；显式写 `deferCommands: []`
+  （空数组）= **没有任何命令排队**，等同于关闭排队功能。
+- `immediateCommands` / `alwaysImmediateCommands` 是**强制立即**名单，与内置的
+  `stop / cancel / abort / interrupt / halt` **取并集** —— 某命令即使同时列在
+  `deferCommands` 里也立即执行；两个键语义等价，都只做「加」。
+
 ## 它是怎么做到的
 
-一句话：**在 host 侧包装 `ctx.commands.execute()`** —— agent 忙时把这次调用挂起，
-等 `agent/status` 回到 `idle` 后调用原方法。命令仍由原注册表解析、仍由 `CommandRuntime`
+一句话：**在 host 侧包装 `ctx.commands.execute()`** —— 只有列入 `deferCommands` 的命令
+（默认只有 `/compact`）才会在 agent 忙时被挂起，等 `agent/status` 回到 `idle` 后调用原方法；
+其余命令照旧直通。命令仍由原注册表解析、仍由 `CommandRuntime`
 写 `command/run` + `command/done` 生命周期日志，只是执行时机被推迟到空闲窗口。
 
 有两个不查代码就会踩的坑（都与 DSH 内部实现有关）：
@@ -188,7 +206,8 @@ dev_uninject_plugin { "match": "dsh-command-queue" }
 | **从 v0.1.0 升级后 client 一直是 ✗** | `dsh-client-modules` 的 `resolveMeta()` 有 `pkgMeta` 负缓存：包在**没有** `dsh.client` 声明的形态下加载过一次，`null` 就被缓存。**重启 host** 即可；全新安装不受影响 |
 | **排队期间 transcript 里没提示** | 设计如此：`command/run` 事件在 handler 调用前才写入，而我们在它之前就挂住了。提示在**队列面板**里，不在 transcript |
 | **命令一直不执行** | 它在等 agent 空闲。agent 若一直有排队消息，空闲窗口会被不断占用 —— 用 `/cmdqueue` 或面板确认它还在队列里 |
-| **`/stop` 也进了队列** | 不该发生 —— 控制动词在默认白名单里。若你自定义过 `immediateCommands`（整体替换），记得把控制动词加回去 |
+| **改动类命令（`/permission` 换权限预设、`/plan`、`/goal`）在 agent 忙的时候不生效，要等回合结束** | v0.2.0–v0.2.1 的排队规则是「除立即白名单外一律排队」，把这些命令也排了。**升级到 v0.2.2**（默认只排 `compact`）即可；若你把 `immediateCommands` 当整体替换用过，注意它现在是与内置名单取并集 |
+| **`/stop` 也进了队列** | 不该发生 —— 内置控制动词永远强制立即，`immediateCommands` 只能往里加、不能把它们替换掉。检查是否把 `stop` 同时写进了 `deferCommands`（同时命中时强制立即优先） |
 | **不同 agent 互相影响** | 不会。队列按 agent 隔离，一个 agent 空闲不会放行另一个在队的命令 |
 
 ## 开发
@@ -201,7 +220,7 @@ npm run build # 语法校验 + 全套测试
 
 | 测试文件 | 覆盖 |
 |---|---|
-| `tests/queue.test.mjs` | host 半边：立即放行（未空闲 / 未注册 / 非命令 / 白名单）、忙碌挂起后执行、FIFO 串行、多 agent 隔离、取消、卸载不丢命令、轮询兜底、异常回落、traceable Proxy 的 patch 与精确还原、两条 client 路由 |
+| `tests/queue.test.mjs` | host 半边：立即放行（未空闲 / 未注册 / 非命令 / 不在 `deferCommands` / 强制立即）、默认只排 `compact`、`deferCommands` 可延展与 `[]` 关闭排队、`immediateCommands` 取并集、忙碌挂起后执行、FIFO 串行、多 agent 隔离、取消、卸载不丢命令、轮询兜底、异常回落、traceable Proxy 的 patch 与精确还原、两条 client 路由 |
 | `tests/client-bundle.test.mjs` | 浏览器半边：用最小 React 运行时 + 假 `window.__ModuleLoader__` **真正加载并渲染** bundle —— bundle 形态（id / factory / 无 default）、dock 条目 id 与 order、异常自吞、空队列渲染 `null`、有命令时渲染并能经 drop 路由移除 |
 
 > 第二道测试不是可选项：DSH 的 boot 审计**没有 per-plugin 隔离**，
