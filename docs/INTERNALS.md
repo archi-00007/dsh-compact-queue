@@ -5,17 +5,19 @@
 
 面向想改这个插件、或想在 DSH 里做同类拦截的维护者。只想用它的话看 [README](../README.md) 就够了。
 
-所有 `文件:行` 引用均以运行中的 `@deepseek-ai/dsh@0.1.7-alpha.2`（路径前缀
-`…\npm\node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai\`）的**编译产物**为准，
-并已回对 `0.1.7-rc.1` 抽样复核。
+所有 `文件:行` 引用以 `@deepseek-ai/dsh@0.2.1-rc.2` 的**源码树**为准
+（仓库根 `/home/archi/workspace/deepseek-harness`，路径相对该根）。
 
-> **兼容性结论（0.1.7 复核）**：原始基线是 `0.1.6-alpha.1`。上游**未**原生支持
-> 「忙时排队斜杠命令」——`dsh-command-compact/README.md:141,153` 明写
-> *"the command itself is not queued"* 并把 *"Queued commands"* 列为
-> *undecided / open direction*；`dsh-commands` 业务代码零排队逻辑；UI 层
-> `plainMessageDraft` 显式把 `/` 草稿排除在 queue/steer 之外。本插件依赖的内部 API
-> 逐条仍在（`dsh-commands/lib/index.js` 与 0.1.6-alpha.1 **字节完全相同**），
-> 唯一需要跟进的是客户端 QueueDock 样式（已同步，见 §3）。
+> 上一版针对 0.1.7-alpha.2 的**编译产物**（`…\node_modules\@deepseek-ai\`）引用已全部重锚到源码；
+> 编译产物里那些行号在 0.2.x 已对不上，别再拿旧版本文档核对。
+
+> **兼容性结论（0.2.1-rc.2 复核）**：上游**仍未**原生支持「忙时排队斜杠命令」——
+> `packages/compaction/command-compact/README.md:140` 明写 *"the command itself is not queued"*，
+> `:152` 把 *"Queued commands"* 列为 *remains an open direction*；`dsh-commands` 业务代码
+> 零排队逻辑；UI 层 `plainMessageDraft` 显式把 `/` 草稿排除在 queue/steer 之外。
+> 本插件依赖的内部 API 逐条仍在：`ctx.commands.execute/find`、`agent.status`、
+> `agent.ctx.on('agent/status')`、`ctx.connection.fetch.register`、`ctx.slots.register`。
+> 需要跟进的只有客户端 QueueDock 样式（见 §3）。
 
 ---
 
@@ -41,11 +43,12 @@
 ```
 
 **为什么打这个补丁有效**：typert gateway 在 `prepareInvocation()` 里每次调用都执行
-`Reflect.get(receiver, descriptor.implementation ?? descriptor.method)`
-（`dsh-api-gateway/lib/index.js:977-978`）；而 `commands/execute` 的 strict descriptor
-只声明 `method: 'execute'`，**不携带方法引用**（`dsh-commands/lib/typert.host.js:54`）。
+`descriptor.implementation ?? descriptor.method` 再 `Reflect.get(callReceiver, implementation)`
+（`packages/api/gateway/src/index.ts:842-843`，`openWireStream` 里还有一处同款 `:380`）。
+`commands/execute` 的 strict descriptor 由 `@Remote`（`packages/interaction/commands/src/index.ts:360`）
+生成，只声明方法名、**不携带方法引用**。
 所以给服务对象加一个自有的 `execute` 会被后续所有请求采纳，
-`agentId` 参数解析、参数校验、结果 schema 全部不变。
+`agent` 参数解析、参数校验、结果 schema 全部不变。
 
 > **两个必须知道的细节**（都踩过）：
 > 1. `execute` 定义在 **`CommandRuntime.prototype`** 上，实例本身没有自有描述符
@@ -67,7 +70,8 @@
 
 **规则是白名单**（v0.2.2 起）：只有名字明确列在 `deferCommands` 里的命令才可能被排队，
 默认只有 `compact` —— 它是唯一「忙时必然失败」的命令（`compactNow` → `runMaintenance`
-的 `phase.kind !== 'idle'` 同步闸门）。其余命令一律照旧立即执行，零回归。
+的同步闸门 `if (this.phase.kind !== 'idle') throw`，
+`packages/core/agent-loop/src/agent.ts:184`）。其余命令一律照旧立即执行，零回归。
 
 判定顺序（**任一命中即立即执行，不进队列**）：
 
@@ -78,8 +82,12 @@
    用户配置的 `immediateCommands` / `alwaysImmediateCommands` 与内置名单**取并集**，
    所以无法把内置控制动词排除掉，某命令即使同时列在 `deferCommands` 里也立即执行；
 4. **命令名在注册表里解析不到** —— `ctx.commands.find(agent, name)` 返回 `undefined`
-   （客户端本来就会按「未命中」处理，没必要拖到空闲后）；
-5. **agent 当前就是 idle**。
+   （`packages/interaction/commands/src/index.ts:328`；客户端本来就会按「未命中」处理，
+   没必要拖到空闲后）；
+5. **agent 当前就是空闲** —— `status === 'idle'` 且 `phase.kind !== 'maintenance'`。
+   压缩进行中 `status` 也报 `idle`（`agent.ts:140-142` 的 getter 把 `maintenance` 算作 idle），
+   但 `runMaintenance()` 会拒，所以那段窗口按忙处理。
+
 
 只有「合法 + 在 `deferCommands` 里 + 未被强制立即 + 已注册 + agent 正忙」才入队。
 此外，**排队逻辑自身抛错**时兜底回落成原行为，绝不吞掉用户命令。
@@ -108,8 +116,9 @@
 ## 3. 浏览器队列面板
 
 **它挂在哪**：DSH 原生消息队列本身就是槽位 `conversation.input.dock` 上的一个
-**list 贡献**（`dsh-client-ui-conversation/lib/client.js:15535-15537`，`id: "queue"`；
-槽位声明见同文件 `:17789`）。list 槽允许第三方携带自己的 `id` **追加**条目，
+**list 贡献**（`packages/client/ui-conversation/src/client/queue/QueueDock.tsx:396`，`id: 'queue'`；
+槽位声明见 `packages/client/ui-conversation/src/client/contract/slots.ts:270`，
+`kind: 'list'`、`scope: 'session'`）。list 槽允许第三方携带自己的 `id` **追加**条目，
 所以本插件注册 `id: "command-queue"`、`order: 30`，两条队列上下并排：
 
 ```js
@@ -121,28 +130,25 @@ ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
 }, CommandQueueDock))
 ```
 
-兼容边界：0.1.7 给 list 槽新增了两个**可选**字段 `label` / `priority`
-（槽位内核 `dsh-client-ui-slots/lib/index.js` 与 0.1.6-alpha.2 **字节相同**），
-本插件不传即取默认值，向后兼容。
+list 槽条目支持 `label` / `priority` 等可选字段，本插件不传即取默认值，向后兼容。
 
-**样式来源**：CSS 取自原生 QueueDock 的 CSS 模块原文
-（`dsh-client-ui-conversation/lib/client.js:15078` 的 `css$6`），类名统一改前缀为
-`dshcq_` 避免冲突，设计变量（`--dsw-alias-*`、`--dsh-composer-*`）沿用全局主题，
+**样式来源**：CSS 取自原生 QueueDock 的 CSS 模块
+（`packages/client/ui-conversation/src/client/queue/QueueDock.module.css`），
+类名统一改前缀为 `dshcq_` 避免冲突，设计变量（`--dsw-alias-*`、`--dsh-composer-*`）沿用全局主题，
 因此深浅色主题下与原生队列表现一致。样式通过官方那套
 `<style data-plugin-css=…>` 注入模式幂等插入。
 
-> 0.1.7 重做过这块面板，本插件 CSS 已于 v0.2.1 同步：面板改为 `isolation:isolate`
-> + `:before` 半透明菜单层（原写法是 `background:var(--dsw-specific-tip)`，深色主题下
-> 底色偏差可见）、行高 `min-height`、字号走 `--dsw-font-xs-13` token、
-> 图标按钮补 `corner-shape:round`。原生面板另支持附件缩略图与就地编辑，本插件
-> **有意不跟进**（保持「单行摘要 + 移除按钮」），避免下次审计重复排查这一点。
+> 面板结构：`isolation:isolate` + `:before` 半透明菜单层、行高 `min-height`、
+> 字号走 `--dsw-font-xs-13` token、图标按钮 `corner-shape:round`。原生面板另支持
+> 附件缩略图与就地编辑，本插件**有意不跟进**（保持「单行摘要 + 移除按钮」），
+> 避免下次审计重复排查这一点。
 
 **数据从哪来**：`ctx.connection.fetch.register()` 注册两条**已鉴权**路由：
 
 | 路由 | 方法 | 用途 |
 |---|---|---|
-| `/api/command-queue/state` | GET / HEAD | 按 `?sessionId=` 返回队列快照 `{ok, items:[{id,name,line,queuedAt}]}` |
-| `/api/command-queue/drop` | POST | `{sessionId, id}` 移除一条在队命令（命令不会被执行） |
+| `/api/command-queue/state` | GET / HEAD | 按 `?sessionId=` 返回队列快照 `{ok, items:[{id,name,line,queuedAt,running}]}` |
+| `/api/command-queue/drop` | POST | `{sessionId, id}` 移除一条**还在等待**的命令（命令不会被执行；`running: true` 的条目拒绝移除） |
 
 它们由 `/api` 前缀处理器分发，因此**先过** `requestRejection()`
 （Host/Origin 信任围栏 + 浏览器签名 cookie）。
@@ -157,7 +163,7 @@ Web 应用无法 mount。
 
 ## 4. 你会看到什么（实测的运行时行为）
 
-这些结论来自对运行中 `@deepseek-ai/dsh@0.1.7-alpha.2` 客户端/host 代码的逐行核对。
+这些结论来自对 `@deepseek-ai/dsh@0.2.1-rc.2` 客户端/host 代码的逐行核对与实测。
 
 **提交 `/compact`（agent 正在跑）时：**
 
@@ -169,10 +175,12 @@ Web 应用无法 mount。
    每行右侧有一个移除按钮。它挂在原生队列**同一个槽位** `conversation.input.dock`
    上（原生 id `queue` / order 20，本插件 id `command-queue` / order 30），
    所以两条队列是上下并排的。
-3. **回合结束后**，命令真正执行，此时 `command/run` + `command/done` 落盘并流回
-   浏览器，transcript 里出现正常的命令卡片：先「执行中…」，再「已完成」+
+3. **回合结束后**，命令真正执行。从这一刻起到 `execute()` settle 之间（压缩要跑几十秒），
+   面板里那行状态显示**正在执行**，移除按钮禁用——这是 v0.2.3 补的：此前整段压缩期间
+   面板都还在说「等待 agent 空闲」。`command/run` + `command/done` 落盘并流回
+   浏览器后，transcript 里出现正常的命令卡片：先「执行中…」，再「已完成」+
    真实结果文案（例如 `Compacted 12 history items (~3456 tokens).`），失败则红色「指令失败」。
-   队列面板里对应的那行同时消失。
+   命令 settle 之后，队列面板里对应的那行消失。
 4. 不想开浏览器面板时：`/cmdqueue` 用纯文本报告同一份队列。
 
 > 注：面板每 1.5s 轮询一次 host 快照，**只在有排队命令时才渲染**（空队列返回 `null`，
@@ -238,22 +246,43 @@ T1 与 T2 的对比同时证明了：补丁确实落在 gateway 的调用路径�
 > `typeof raw.execute / arity :: function / 4`、
 > `getOwnPropertyDescriptor(raw,'execute') :: undefined`（故还原走 `delete` 分支）。
 
+**`0.2.1-rc.2` 实装验证**（源码构建的 `dsh web`，端口 3090，profile 里通过 bundle 层装入）：
+
+- host 半边注册成功：`GET /api/command-queue/state` → `200 {"ok":true,"items":[]}`；
+  该路由是 `apply()` 里在包装 `execute` **之后**注册的，路由存在即证明包装已执行。
+- client 半边注入成功：页面预加载列表含 `dsh-command-queue/client.js`，
+  合并 bundle 可取（1.98 MB，200），插件代码在内。
+- 真实交互：agent 输出期间发 `/compact` → 正常入队而非报 busy；面板样式与原生队列一致；
+  压缩进行中该行显示**正在执行**（v0.2.3 修正点）。
+- 未经我验证的部分：对 3090 那个实例没做自动化 UI 断言，面板视觉由人工确认。
+
 ---
 
 ## 6. 代码出处
 
-实现依据（运行中的 `@deepseek-ai/dsh@0.1.7-alpha.2`，路径为
-`…\npm\node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai\`）：
+实现依据为 `@deepseek-ai/dsh@0.2.1-rc.2` 的源码树（路径相对仓库根 `deepseek-harness/`）：
 
-- `dsh-commands/lib/index.js:327` —— `async execute(agent, line, submittedAttachments, signal)`（原型方法，可包装）；该文件与 `0.1.6-alpha.1` **字节完全相同**
-- `dsh-commands/lib/types/index.d.ts:142` —— `execute(agent, line, submittedAttachments, signal)` 公开契约
-- `dsh-commands/lib/typert.host.js:54` —— strict descriptor 只声明 `method: 'execute'`（同处 `cancellation: { parameter: 'signal' }`）
-- `dsh-api-gateway/lib/index.js:977-978` —— `implementation = descriptor.implementation ?? descriptor.method` / `Reflect.get(callReceiver, implementation)`：每次调用动态取方法
-- `dsh-command-compact/lib/index.js:49-73` —— `/compact` handler 与 busy 文案（`:18-23` 是 `code === 'busy'` 的用户可见文案）
-- `dsh-compaction-basic/lib/index.js:984-1010` —— `compactNow` 把 `runMaintenance` 的同步抛错包成 `ManualCompactionError('busy', …)`
-- `dsh-compaction/lib/types/index.d.ts:137` —— `compactNow(agent, signal, sourceCommandId)`
-- `dsh-agent-loop/lib/index.js:822-823` —— `runMaintenance` 的忙时闸门：`if (this.phase.kind !== "idle") throw`
-- `dsh-agent-loop/lib/index.js:870` —— `async whenIdle()`
-- `dsh-agent/lib/types/runtime-types.d.ts:90,147,149,254` —— `AgentStatus` / `agent.status` / `agent.ctx` / `agent/status` 事件
-- `dsh-client-ui-conversation/lib/client.js:15078` —— 原生 QueueDock 的 `css$6`（本插件 CSS 出处）
-- `dsh-client-ui-conversation/lib/client.js:15535-15537`、`:17789` —— 原生队列 dock 贡献（`id: "queue"`）与 `conversation.input.dock` 槽位声明
+| 位置 | 内容 |
+|---|---|
+| `packages/interaction/commands/src/index.ts:361` | `async execute(agent, line, submittedAttachments, signal)`（`CommandRuntime` 原型方法，可包装） |
+| `packages/interaction/commands/src/index.ts:360` | `@Remote` 装饰器：strict descriptor 由它生成，只带方法名、不带方法引用 |
+| `packages/interaction/commands/src/index.ts:328` | `find(agent, name)`：排队前的「是否已注册」判定 |
+| `packages/api/gateway/src/index.ts:842-843` | `implementation = descriptor.implementation ?? descriptor.method` / `Reflect.get(callReceiver, implementation)`：每次调用动态取方法（`:380` 同款） |
+| `packages/core/agent-loop/src/agent.ts:184` | `runMaintenance` 的忙时闸门：`if (this.phase.kind !== 'idle') throw` |
+| `packages/core/agent-loop/src/agent.ts:140-142` | `get status()`：`idle` 与 `maintenance` 都返回 `'idle'`（本插件要额外排除 maintenance 的原因） |
+| `packages/core/agent-loop/src/agent.ts:237` | `async whenIdle()`（未使用，仅记录同名能力） |
+| `packages/core/agent/src/runtime-types.ts:109` | `export type AgentStatus = 'idle' \| 'running'` |
+| `packages/core/agent/src/dispatch.ts:107` | `agentEvents()`：`agent/status` 等 agent 事件经 `ctx.events.dispatch` 派发，故 `agent.ctx.on(...)` 收得到 |
+| `packages/compaction/command-compact/src/index.ts:67` | `/compact` handler 调 `ctx.compaction.compactNow(...)` |
+| `packages/compaction/command-compact/src/index.ts:26-29` | `code === 'busy'` 的用户可见文案（"Compaction is unavailable…"） |
+| `packages/compaction/command-compact/README.md:140,152` | 上游明示「命令本身不排队」/「排队仍是 open direction」 |
+| `packages/compaction/compaction-basic/src/index.ts:383` | `compactNow` 覆写 |
+| `packages/compaction/compaction-basic/src/index.ts:428-433` | 把 `runMaintenance` 的同步抛错包成 `ManualCompactionError('busy', …)` |
+| `packages/compaction/compaction-basic/src/region.ts:194` | 第二处 busy 来源：session 已有 open turn |
+| `packages/compaction/compaction/src/index.ts:162` | `abstract compactNow(...)` 契约 |
+| `packages/client/ui-conversation/src/client/queue/QueueDock.tsx:396` | 原生队列 dock 贡献（`id: 'queue'`） |
+| `packages/client/ui-conversation/src/client/contract/slots.ts:270` | `conversation.input.dock` 槽位声明（`kind: 'list'`、`scope: 'session'`） |
+| `packages/client/ui-conversation/src/client/queue/QueueDock.module.css` | 本插件 CSS 出处 |
+| `packages/client/ui-conversation/src/client/skeleton/InputBar.tsx:328` | `plainMessageDraft`：`/` 开头的草稿被排除在原生队列/steer 之外 |
+| `packages/boot/app-boot/src/profile.ts:58-75` | profile 的 bundle patch 层合成（`dsh.bundle.patch` 生效处） |
+| `packages/client/modules/src/index.ts` | `dsh.client` 双面机制：客户端 bundle 的发现与装配 |
