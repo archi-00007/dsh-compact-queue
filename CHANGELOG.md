@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.2.3 — 2026-10-21
+
+**在 `@deepseek-ai/dsh@0.2.1-rc.2` 上实测后的两处修正。**
+
+### 问题
+
+压缩（`phase.kind === 'maintenance'`）进行中，`agent.status` 仍报 `idle`——因为
+`AgentLoop` 的 status getter 把 `maintenance` 也算作 idle——但 `runMaintenance()`
+会以 *already has active work* 拒绝。
+
+后果有两个：
+
+1. **面板谎报在排队**：命令被唤醒后调 `run()`，而 `execute()` 的 Promise 要等压缩
+   真正结束才 settle，`release` 又挂在它之后。整个压缩期间条目留在快照里，面板按
+   固定文案显示「等待 agent 空闲」。
+2. **压缩期间再发 `/compact` 直接失败**：`isIdle()` 把 maintenance 判为空闲，于是
+   不排队、立即执行、立刻撞回 busy。
+
+### 修复
+
+- `isIdle()` 排除 `phase.kind === 'maintenance'`。读不到 `phase` 时退化为只看
+  `status`，即上游原本的行为。
+- 条目新增 `running` 标记：`run()` 前一刻置位，快照多带该字段。面板据此把文案切换成
+  「正在执行」，并在执行中禁用移除按钮；host 侧 `dropQueued` 同步拒绝移除。
+
+### 验证
+
+- `npm test` 32/32 通过。
+- 在运行中的 `@deepseek-ai/dsh@0.2.1-rc.2` 上实测：压缩期间面板显示「正在执行」；
+  压缩期间再发 `/compact` 会正常排队而不是报 busy。
+
+---
+
 ## v0.2.2 — 2026-09-24
 
 **修复回归：不再把「改会话状态」的命令排进队列。**

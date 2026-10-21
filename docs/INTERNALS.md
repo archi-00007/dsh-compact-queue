@@ -1,6 +1,6 @@
 # 设计与实现细节
 
-本文是 [dsh-command-queue](https://github.com/kuyueliuhun-ctrl/dsh-command-queue) 的
+本文是 [dsh-command-queue](https://github.com/archi-00007/dsh-compact-queue) 的
 **完整技术细节**：实现原理、行为契约、浏览器半边、实测运行时行为、验证记录与代码出处。
 
 面向想改这个插件、或想在 DSH 里做同类拦截的维护者。只想用它的话看 [README](../README.md) 就够了。
@@ -191,20 +191,21 @@ Web 应用无法 mount。
 - **无 RPC 超时**：宿主 webserver / `/api` bridge / typert gateway / 浏览器 fetch 全链路
   都没有 per-request deadline（唯一的 `requestTimeout=300s` 是 Node 默认值，只作用于
   「收完请求」阶段，实测不会杀掉 pending 响应）。所以挂住几分钟是安全的。
-- **无幂等键**：`commands/execute` 的参数只有 `agentId / line / submittedAttachments`，
-  没有 requestId。手动重发同一行命令会真的执行两次——插件不做去重。
+- **无幂等键**：`commands/execute` 的参数是 `agent / line / submittedAttachments / signal`
+  （`0.2.1-rc.2` 起为四参），没有 requestId。手动重发同一行命令会真的执行两次——插件不做去重。
 - **依赖 `agent.status`**（`AgentStatus = 'idle' | 'running'`）。状态不可读时按
   「忙碌」处理（宁可排队，不可抢跑）。
 - **`idle` 不蕴含「能跑维护任务」**：`phase.kind === 'maintenance'` 期间 `status`
-  仍是 `idle` 且不发事件，此时若有另一个 maintenance 占用 agent，`compactNow` 仍会
-  报 `busy`。这种情况插件不掩盖，按原样返回该报错。
+  仍是 `idle` 且不发事件。v0.2.3 起 `isIdle()` 把这段窗口一并排除，压缩进行中
+  排队命令不会被唤醒去撞 `compactNow` 的 `busy`；窗口结束靠 250ms 轮询兜底唤醒
+  （该窗口不发 `agent/status`，事件路径指望不上）。
 - 只对**命令**生效。普通消息的排队是 DSH 内建行为，本插件不介入。
 
 ---
 
 ## 5. 验证记录
 
-**单元测试**：`npm test` → **29/29 通过**，含两个专门针对踩过的坑的回归用例
+**单元测试**：`npm test` → **32/32 通过**，含两个专门针对踩过的坑的回归用例
 （traceable Proxy 的 patch 与精确还原）。
 
 **浏览器半边冒烟测试**（`tests/client-bundle.test.mjs`，7 项）：用最小 React 运行时 +

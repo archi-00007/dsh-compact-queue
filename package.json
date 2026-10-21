@@ -1,6 +1,6 @@
 {
   "name": "dsh-command-queue",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "DSH 插件：让 /compact 这类需要 agent 空闲的斜杠命令在忙碌时进入命令队列、空闲后自动执行（默认只排 compact，其余命令一律立即执行）；并在浏览器里以复刻原生队列的样式展示这份队列。",
   "keywords": [
     "dsh",
@@ -45,11 +45,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kuyueliuhun-ctrl/dsh-command-queue.git"
+    "url": "git+https://github.com/archi-00007/dsh-compact-queue.git"
   },
-  "homepage": "https://github.com/kuyueliuhun-ctrl/dsh-command-queue#readme",
+  "homepage": "https://github.com/archi-00007/dsh-compact-queue#readme",
   "bugs": {
-    "url": "https://github.com/kuyueliuhun-ctrl/dsh-command-queue/issues"
+    "url": "https://github.com/archi-00007/dsh-compact-queue/issues"
   },
   "engines": {
     "node": ">=22.19.0"

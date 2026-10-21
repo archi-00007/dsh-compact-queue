@@ -5,10 +5,10 @@
 
 **Queue slash commands until the agent is idle — with a browser queue panel styled after DSH's native message queue.**
 
-[![Release](https://img.shields.io/github/v/release/kuyueliuhun-ctrl/dsh-command-queue?sort=semver)](https://github.com/kuyueliuhun-ctrl/dsh-command-queue/releases)
-[![License](https://img.shields.io/github/license/kuyueliuhun-ctrl/dsh-command-queue)](./LICENSE)
+[![Release](https://img.shields.io/github/v/release/archi-00007/dsh-compact-queue?sort=semver)](https://github.com/archi-00007/dsh-compact-queue/releases)
+[![License](https://img.shields.io/github/license/archi-00007/dsh-compact-queue)](./LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-blueviolet)](https://github.com/topics/dsh-plugin)
-[![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.1.7--alpha.2-4f46e5)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.2.1--rc.2-4f46e5)](https://github.com/deepseek-ai/deepseek-harness)
 
 DeepSeek Harness（DSH）插件 · host + client 双面 · **不改 DSH 源码** · 卸载即完全还原
 
@@ -64,48 +64,49 @@ agent 忙碌时敲 `/compact`：
 
 > **本包是 host + client 双面插件。** host 半边做排队与执行，client 半边
 > （`exports["./client"]`，由 `package.json` 的 `dsh.client.platform: "web"` 声明）渲染队列面板。
-> ⚠️ 客户端插件是**页面加载时**装配的 —— 安装/注入后需要**刷新页面**才会出现面板。
+> ⚠️ 客户端插件是**页面加载时**装配的 —— 安装后需要**刷新页面**才会出现面板。
 
-### 方式 A：从 GitHub 装配进 profile（推荐，重启后仍在）
+本包自带 `cordis.patch.yml`，dsh 的 bundle 层会把 `command-queue` 这一行自动插进 loader，
+**不需要手动写 patch 条目**。
 
-```bash
-cd "$DSH_HOME/profiles/<profile>"          # 例如 ~/.dsh/profiles/web
-npm install github:kuyueliuhun-ctrl/dsh-command-queue
+> 包名是 `dsh-command-queue`（沿用上游 fork 的包标识），仓库名是 `dsh-compact-queue`。
+> 因此安装后 profile 的 `dependencies` 键显示为 `dsh-command-queue`，这是正常的。
+
+### 方式 A：dsh 插件管理器（推荐）
+
+dsh Web → 设置 → 插件 → **安装第三方插件**，填入：
+
+```
+github:archi-00007/dsh-compact-queue
 ```
 
-然后把包名加进该 profile `package.json` 的 `dsh.profile.bundles` 数组：
+### 方式 B：命令行
+
+```bash
+dsh plugin --profile web add github:archi-00007/dsh-compact-queue
+```
+
+装好后确认 profile 的 `package.json` 里 `dsh.profile.bundles` 含有 `dsh-command-queue`：
 
 ```json
 { "dsh": { "profile": { "bundles": ["dsh-command-queue"] } } }
 ```
 
-本包自带 `cordis.patch.yml`，bundle 层会把 `command-queue` 这一行插进 loader，无需手写 patch 条目。
+缺失就补上这一行再重启。
 
-### 方式 B：本地目录装配（开发）
-
-```bash
-npm install "file:/path/to/dsh-command-queue"
-```
-
-用了 dsh-super-injector 的话：
+### 方式 C：本地目录（开发）
 
 ```bash
-dev_install_package { "dir": "/path/to/dsh-command-queue", "profile": "web" }
-```
-
-### 方式 C：运行时注入（免重启，临时验证）
-
-```bash
-dev_inject_plugin   { "dir": "/path/to/dsh-command-queue" }
-dev_plugin_status   {}
+dsh plugin --profile web add file:/path/to/dsh-compact-queue
 ```
 
 ### 卸载
 
 ```bash
-dev_uninject_plugin { "match": "dsh-command-queue" }
-# 非注入器环境：从 dsh.profile.bundles 移除该名字，再删除 node_modules 里的包
+dsh plugin --profile web remove dsh-command-queue
 ```
+
+`dsh.profile.bundles` 里若还有该名字，一并删掉；面板与 host 路由会随插件卸载一起消失。
 
 ## 使用
 
@@ -117,6 +118,9 @@ dev_uninject_plugin { "match": "dsh-command-queue" }
 
 面板每 1.5s 轮询一次 host 快照；行右侧的按钮可以把一条还没执行的在队命令移除
 （被移除的命令**不会执行**）。
+
+命令被唤醒、真正进入执行之后（典型例子：`/compact` 触发的压缩要跑几十秒），
+该行状态会变成**正在执行**，移除按钮同时禁用——它已经离开等待队列，不受队列控制了。
 
 ### `/cmdqueue` 命令（纯文本路径）
 
@@ -143,7 +147,8 @@ dev_uninject_plugin { "match": "dsh-command-queue" }
    用户配置的 `immediateCommands` / `alwaysImmediateCommands` 与之**取并集**；
 4. **命令名在注册表里解析不到** —— `ctx.commands.find(agent, name)` 返回 `undefined`，
    客户端本来就会按「未命中」处理，没必要拖到空闲之后；
-5. **agent 当前就是 idle**。
+5. **agent 当前就是空闲** —— `status === 'idle'` 且 `phase.kind !== 'maintenance'`。
+   压缩进行中 `status` 也报 `idle`，但 `runMaintenance()` 会拒绝，所以那段窗口算忙。
 
 只有「合法 + 在 `deferCommands` 里 + 未被强制立即 + 已注册 + agent 正忙」才入队。
 此外，**排队逻辑自身抛错**时兜底回落成原行为，绝不吞掉用户命令。
@@ -202,7 +207,7 @@ dev_uninject_plugin { "match": "dsh-command-queue" }
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| **刷新了也看不到面板** | 客户端插件只在页面加载时装配。先确认 `dev_plugin_status` 里本插件是 `client ✓`；若显示 `client ✗`，是 `pkgMeta` 负缓存（见下一行），重启 host 或清缓存 |
+| **刷新了也看不到面板** | 客户端插件只在页面加载时装配。先确认 profile 的 `dsh.profile.bundles` 含 `dsh-command-queue`，且插件在管理页里是启用状态；若是从旧版升级过来仍不显示，重启 host 清掉 `pkgMeta` 负缓存 |
 | **从 v0.1.0 升级后 client 一直是 ✗** | `dsh-client-modules` 的 `resolveMeta()` 有 `pkgMeta` 负缓存：包在**没有** `dsh.client` 声明的形态下加载过一次，`null` 就被缓存。**重启 host** 即可；全新安装不受影响 |
 | **排队期间 transcript 里没提示** | 设计如此：`command/run` 事件在 handler 调用前才写入，而我们在它之前就挂住了。提示在**队列面板**里，不在 transcript |
 | **命令一直不执行** | 它在等 agent 空闲。agent 若一直有排队消息，空闲窗口会被不断占用 —— 用 `/cmdqueue` 或面板确认它还在队列里 |
@@ -226,12 +231,25 @@ npm run build # 语法校验 + 全套测试
 > 第二道测试不是可选项：DSH 的 boot 审计**没有 per-plugin 隔离**，
 > 客户端 bundle 抛错会让整个 Web 应用无法 mount。
 
+## 本 fork 相对上游的改动
+
+上游基线 `dsh-command-queue@0.2.2`，本仓库在 `@deepseek-ai/dsh@0.2.1-rc.2` 上实测后改了两处：
+
+| 改动 | 原因 |
+|---|---|
+| `isIdle()` 排除 `phase.kind === 'maintenance'` | 压缩进行中 `agent.status` 仍报 `idle`，但 `runMaintenance()` 会以 *already has active work* 拒绝。不排除的话，排队命令会在压缩期间被误判为空闲而唤醒，立刻撞回 busy |
+| 队列条目新增 `running` 状态 | 从唤醒到 `execute()` 真正 settle 之间，条目仍留在快照里。面板据此显示**正在执行**而不是谎报「等待空闲」；执行中的行禁用移除按钮，host 侧 `dropQueued` 同步拒绝 |
+
+完整改动见 `git diff 39845aa`。
+
 ## 兼容性
 
-针对运行中的 `@deepseek-ai/dsh@0.1.7-alpha.2` 实现，依据其编译产物逐行核对
-（`0.1.6-alpha.1` 为原始基线，`0.1.7-rc.1` 抽样复核结论一致）。
+针对运行中的 `@deepseek-ai/dsh@0.2.1-rc.2` 实现，依据其源码逐行核对。
 只使用公开面：`ctx.commands.execute/find/register`、`agent.status`、
 `agent.ctx.on('agent/status')`、`ctx.connection.fetch.register`、`ctx.slots.*`。
+
+> 读 `phase.kind` 判断 maintenance 是唯一一处非公开面依赖（TypeScript 的 `private` 在运行时只是普通属性）。
+> 读不到时自动退化为只看 `status`，即上游原本的行为，不会因此报错。
 
 > **上游仍未支持「忙时排队命令」**：`dsh-command-compact` 的官方文档明写
 > *"the command itself is not queued"*，并把 *"Queued commands"* 列为
@@ -240,4 +258,4 @@ npm run build # 语法校验 + 全套测试
 
 ## 许可
 
-[MIT](./LICENSE) · 问题与建议欢迎提到 [Issues](https://github.com/kuyueliuhun-ctrl/dsh-command-queue/issues)。
+[MIT](./LICENSE) · 问题与建议欢迎提到 [Issues](https://github.com/archi-00007/dsh-compact-queue/issues)。
